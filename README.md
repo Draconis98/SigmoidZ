@@ -1,0 +1,243 @@
+# SigmoidZ
+
+SigmoidZ explores a small change to the Probabilistic Transformer view of contextual representations: replace a categorical latent label with a binary vector `Z_i in {0, 1}^d`. The resulting mean-field update has a sigmoid form, which can be mapped back to Transformer blocks.
+
+The repo keeps two variants:
+
+- `conservative`: replace RMSNorm/LayerNorm-style layers with `SigmoidZNorm`.
+- `research`: use a sigmoid mean-field-style update inside the attention path.
+
+The default is a decoder-only causal LM with the conservative variant.
+
+## Theory
+
+The binary MFVI update is:
+
+$$q_{i,a} = Q(Z_{i,a} = 1) = \sigma(S_{i,a} + G_{i,a})$$
+
+The centered representation is:
+
+$$2q_{i,a} - 1$$
+
+SigmoidZNorm uses:
+
+$$\gamma * (2 \sigma(2 \alpha x + \beta) - 1) + \delta$$
+
+When $\beta = 0$, this is exactly DyT because:
+
+$$\tanh(x) = 2 \sigma(2x) - 1$$
+
+See [docs/theory.md](docs/theory.md).
+
+## Setup
+
+This project uses `uv` and Python 3.12.
+
+```bash
+UV_PROJECT_ENVIRONMENT=.sigmoidz uv sync --dev
+```
+
+Install optional W&B tracking support when needed:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.sigmoidz uv sync --dev --extra tracking
+```
+
+The current macOS environment can run CPU or MPS correctness checks. CUDA training is supported when the same code is run on an Nvidia server with a CUDA-enabled PyTorch build.
+
+## Run Tests
+
+```bash
+UV_PROJECT_ENVIRONMENT=.sigmoidz uv run pytest
+```
+
+## Smoke Pretraining
+
+This runs a tiny byte-level model on a built-in text corpus. It is only a correctness check.
+
+```bash
+UV_PROJECT_ENVIRONMENT=.sigmoidz uv run python src/train.py --preset tiny --max_steps 20 --out_dir runs/tiny
+```
+
+Or use the script:
+
+```bash
+bash scripts/smoke_train.sh
+```
+
+If `uv` is busy syncing the environment, use the existing interpreter directly:
+
+```bash
+PYTHON_BIN=.sigmoidz/bin/python bash scripts/smoke_train.sh
+```
+
+Enable Weights & Biases logging with `--wandb` after logging in or setting `WANDB_API_KEY`:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.sigmoidz uv run python src/train.py --preset tiny --max_steps 20 --out_dir runs/tiny --wandb
+```
+
+## 50M-Style Pretraining
+
+The included config is a small LLaMA-style decoder-only LM:
+
+```text
+hidden_size: 384
+num_layers: 12
+num_heads: 6
+intermediate_size: 1536
+context_length: 4096
+token_budget_multiplier: 20.0
+save_interval: 100
+keep_checkpoints: 3
+streaming: true
+```
+
+When `max_steps` is `null`, the trainer sets:
+
+```text
+max_steps = ceil(model_parameters * token_budget_multiplier / global_tokens_per_step)
+```
+
+For the default 50M-style config this targets roughly 20 tokens per model parameter.
+
+Run single process:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.sigmoidz uv run python src/train.py --config configs/50m_sigmoidz.json
+```
+
+Or use the script:
+
+```bash
+bash scripts/train_50m.sh
+```
+
+Run multi-GPU with `torchrun`:
+
+```bash
+torchrun --nproc_per_node=8 src/train.py --config configs/50m_sigmoidz.json
+```
+
+Or use the script:
+
+```bash
+bash scripts/torchrun_50m.sh
+```
+
+For W&B logging, either pass `--wandb` or set `"wandb_enabled": true` in the config. Logging is only initialized on rank 0 under DDP. Set `"wandb_watch_model": true` if you also want W&B gradient/model watching.
+
+W&B single-process script:
+
+```bash
+bash scripts/train_50m_wandb.sh
+```
+
+Scripts pass extra arguments through to `src/train.py`, for example:
+
+```bash
+WANDB_MODE=offline bash scripts/smoke_train.sh --wandb
+```
+
+## Checkpoints
+
+Training writes full checkpoints under:
+
+```text
+runs/.../checkpoints/step_00000100.pt
+```
+
+Each checkpoint stores model weights, optimizer state, scheduler state, AMP scaler state, config, and the current step. By default it saves every 100 steps and keeps only the latest 3 checkpoints.
+
+Rank 0 also appends scalar logs to:
+
+```text
+runs/.../train.log
+```
+
+Each line includes `step`, `loss`, `ppl`, `lr`, `grad_norm`, `tokens`, and `tok/s`.
+
+Resume from the newest checkpoint:
+
+```bash
+bash scripts/train_50m.sh --resume latest
+```
+
+Resume from a specific checkpoint:
+
+```bash
+bash scripts/train_50m.sh --resume runs/50m_sigmoidz/checkpoints/step_00000100.pt
+```
+
+## Tokenizers
+
+The default 50M tokenizer is `meta-llama/Llama-2-7b-hf`, which requires Hugging Face access approval and an authenticated environment. Other practical choices are:
+
+- `meta-llama/Llama-2-7b-hf`: default LLaMA tokenizer, requires Hugging Face access approval.
+- `gpt2`: compact baseline, easy to fetch, vocab around 50k.
+- `EleutherAI/gpt-neox-20b`: Pile-style GPT-NeoX tokenizer, a better match if training on The Pile-like data.
+- `mistralai/Mistral-7B-v0.1`: Mistral tokenizer, useful for LLaMA-family experiments.
+- `Qwen/Qwen2.5-0.5B`: Qwen tokenizer, larger multilingual coverage.
+
+Set it in config:
+
+```json
+{
+  "train": {
+    "tokenizer_name": "gpt2"
+  }
+}
+```
+
+The model vocab size is inferred from the tokenizer at runtime.
+
+## Streaming Data
+
+For Hugging Face datasets, set:
+
+```json
+{
+  "train": {
+    "streaming": true
+  }
+}
+```
+
+Streaming mode tokenizes samples as training runs and packs them into fixed-length batches. It avoids flattening the full dataset into RAM. Local tiny/text-file training still uses the in-memory random-span batcher because those datasets are small.
+
+DeepSpeed is not included in the initial dependency set. For 50M-scale experiments, `torchrun` with DDP is the simpler baseline. Add DeepSpeed later if ZeRO sharding or optimizer offload becomes necessary.
+
+## Variants
+
+Set these fields in a JSON config:
+
+```json
+{
+  "model": {
+    "norm_type": "sigmoidz",
+    "block_variant": "conservative"
+  }
+}
+```
+
+Supported `norm_type` values:
+
+- `rmsnorm`
+- `dyt`
+- `sigmoidz`
+
+Supported `block_variant` values:
+
+- `conservative`
+- `research`
+
+## Notes
+
+The DyT LLM recipe trains LLaMA models on The Pile and tunes the initial DyT slope by scale and block type. SigmoidZ follows the same practical idea with:
+
+- `alpha_attn`: initial slope for attention block normalization
+- `alpha_other`: initial slope for FFN and final normalization
+
+These config values are initial values. In `SigmoidZNorm`, `alpha`, `logit_bias` (`beta`), `weight` (`gamma`), and `bias` (`delta`) are all learned parameters.
+
+The provided code is an experimental pretraining scaffold, not a reproduction of large-scale DyT results.
