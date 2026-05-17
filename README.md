@@ -34,21 +34,21 @@ See [docs/theory.md](docs/theory.md).
 This project uses `uv` and Python 3.12.
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.sigmoidz uv sync --dev
+UV_PROJECT_ENVIRONMENT=~/venv/.sigmoidz uv sync --dev
 ```
 
 Install optional W&B tracking support when needed:
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.sigmoidz uv sync --dev --extra tracking
+UV_PROJECT_ENVIRONMENT=~/venv/.sigmoidz uv sync --dev --extra tracking
 ```
 
-The current macOS environment can run CPU or MPS correctness checks. CUDA training is supported when the same code is run on an Nvidia server with a CUDA-enabled PyTorch build.
+The current macOS environment can run CPU or MPS correctness checks. CUDA training is supported when the same code is run on an Nvidia server with a CUDA-enabled PyTorch build. The model uses PyTorch `scaled_dot_product_attention`; on CUDA, PyTorch can dispatch it to efficient attention kernels when supported.
 
 ## Run Tests
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.sigmoidz uv run pytest
+UV_PROJECT_ENVIRONMENT=~/venv/.sigmoidz uv run pytest
 ```
 
 ## Smoke Pretraining
@@ -56,7 +56,7 @@ UV_PROJECT_ENVIRONMENT=.sigmoidz uv run pytest
 This runs a tiny byte-level model on a built-in text corpus. It is only a correctness check.
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.sigmoidz uv run python src/train.py --preset tiny --max_steps 20 --out_dir runs/tiny
+UV_PROJECT_ENVIRONMENT=~/venv/.sigmoidz uv run python src/train.py --preset tiny --max_steps 20 --out_dir runs/tiny
 ```
 
 Or use the script:
@@ -68,13 +68,13 @@ bash scripts/smoke_train.sh
 If `uv` is busy syncing the environment, use the existing interpreter directly:
 
 ```bash
-PYTHON_BIN=.sigmoidz/bin/python bash scripts/smoke_train.sh
+PYTHON_BIN=~/venv/.sigmoidz/bin/python bash scripts/smoke_train.sh
 ```
 
 Enable Weights & Biases logging with `--wandb` after logging in or setting `WANDB_API_KEY`:
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.sigmoidz uv run python src/train.py --preset tiny --max_steps 20 --out_dir runs/tiny --wandb
+UV_PROJECT_ENVIRONMENT=~/venv/.sigmoidz uv run python src/train.py --preset tiny --max_steps 20 --out_dir runs/tiny --wandb
 ```
 
 ## 50M-Style Pretraining
@@ -128,7 +128,7 @@ The default 50M-style config uses `warmup_ratio: 0.01`, so warmup is 1% of total
 Run single process:
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.sigmoidz uv run python src/train.py --config configs/50m_sigmoidz.json
+UV_PROJECT_ENVIRONMENT=~/venv/.sigmoidz uv run python src/train.py --config configs/50m_sigmoidz.json
 ```
 
 Or use the script:
