@@ -31,11 +31,13 @@ class TrainConfig:
     streaming: bool = False
     text_file: str | None = None
     batch_size: int = 16
+    gradient_accumulation_steps: int = 1
     max_steps: int | None = 20
     token_budget_multiplier: float | None = None
     learning_rate: float = 3e-4
     weight_decay: float = 0.1
-    warmup_steps: int = 5
+    warmup_steps: int | None = None
+    warmup_ratio: float | None = 0.01
     grad_clip: float = 1.0
     log_interval: int = 5
     save_interval: int = 100
@@ -83,9 +85,11 @@ def fifty_m_config() -> ExperimentConfig:
             dataset_config="wikitext-103-raw-v1",
             streaming=True,
             batch_size=2,
+            gradient_accumulation_steps=1,
             max_steps=None,
             token_budget_multiplier=20.0,
-            warmup_steps=100,
+            warmup_steps=None,
+            warmup_ratio=0.01,
             out_dir="runs/50m_sigmoidz",
             dtype="bfloat16",
             wandb_name="50m-sigmoidz",

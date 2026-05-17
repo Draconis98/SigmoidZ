@@ -88,6 +88,8 @@ num_heads: 6
 intermediate_size: 1536
 context_length: 4096
 token_budget_multiplier: 20.0
+warmup_ratio: 0.01
+gradient_accumulation_steps: 1
 save_interval: 100
 keep_checkpoints: 3
 streaming: true
@@ -100,6 +102,28 @@ max_steps = ceil(model_parameters * token_budget_multiplier / global_tokens_per_
 ```
 
 For the default 50M-style config this targets roughly 20 tokens per model parameter.
+
+`batch_size` is the per-process micro-batch size. Effective tokens per optimizer step are:
+
+```text
+batch_size * gradient_accumulation_steps * context_length * world_size
+```
+
+Increase `gradient_accumulation_steps` when the target global batch does not fit in GPU memory.
+
+Example:
+
+```bash
+bash scripts/train_50m.sh --gradient_accumulation_steps 8
+```
+
+When `warmup_steps` is `null`, the trainer sets:
+
+```text
+warmup_steps = ceil(max_steps * warmup_ratio)
+```
+
+The default 50M-style config uses `warmup_ratio: 0.01`, so warmup is 1% of total steps.
 
 Run single process:
 
@@ -153,9 +177,17 @@ Rank 0 also appends scalar logs to:
 
 ```text
 runs/.../train.log
+runs/.../train_metrics.csv
 ```
 
-Each line includes `step`, `loss`, `ppl`, `lr`, `grad_norm`, `tokens`, and `tok/s`.
+The plain log includes `step`, `loss`, `ppl`, `lr`, `grad_norm`, `alpha`, `param_norm`, `tokens`, and `tok/s`. The CSV is intended for plotting and diagnostics; use `tokens` as the x-axis and `loss` as the y-axis. The loss is already averaged over target tokens by cross entropy, so it should not be divided by cumulative token count again.
+
+The CSV also records repeated run settings and learned-parameter diagnostics:
+
+- run settings: `parameters`, `max_steps`, `warmup_steps`, `target_tokens`, `context_length`, `micro_batch_size`, `gradient_accumulation_steps`, `world_size`, `effective_batch_tokens`, `token_budget_multiplier`, `learning_rate`, `weight_decay`, `grad_clip`
+- SigmoidZ/DyT diagnostics: `alpha_mean`, `alpha_std`, `alpha_min`, `alpha_max`, `alpha_grad_abs_mean`, `logit_bias_mean`, `logit_bias_std`, `logit_bias_abs_max`, `norm_weight_mean`, `norm_weight_std`, `norm_bias_mean`, `norm_bias_std`, `param_norm`
+
+W&B also defines `train/tokens` as the step metric for `train/loss`, `train/ppl`, `train/lr`, `train/grad_norm`, `train/tokens_per_second`, `train/param_norm`, `sigmoidz/*`, and `hparams/*`, so curves are plotted against training tokens rather than optimizer steps.
 
 Resume from the newest checkpoint:
 
