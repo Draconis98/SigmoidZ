@@ -93,6 +93,9 @@ gradient_accumulation_steps: 1
 save_interval: 100
 keep_checkpoints: 3
 streaming: true
+val_dataset_split: validation
+val_interval: 100
+val_steps: 20
 ```
 
 When `max_steps` is `null`, the trainer sets:
@@ -163,6 +166,13 @@ Scripts pass extra arguments through to `src/train.py`, for example:
 WANDB_MODE=offline bash scripts/smoke_train.sh --wandb
 ```
 
+Validation runs on rank 0 when `val_interval` is set. For Hugging Face datasets, set `val_dataset_split` to the validation split name. For local text validation, set `val_text_file`.
+
+```bash
+bash scripts/train_50m.sh --val_interval 100 --val_steps 20 --val_dataset_split validation
+bash scripts/smoke_train.sh --val_interval 10 --val_steps 5 --val_text_file data/valid.txt
+```
+
 ## Checkpoints
 
 Training writes full checkpoints under:
@@ -178,6 +188,7 @@ Rank 0 also appends scalar logs to:
 ```text
 runs/.../train.log
 runs/.../train_metrics.csv
+runs/.../val_metrics.csv
 ```
 
 The plain log includes `step`, `loss`, `ppl`, `lr`, `grad_norm`, `alpha`, `param_norm`, `tokens`, and `tok/s`. The CSV is intended for plotting and diagnostics; use `tokens` as the x-axis and `loss` as the y-axis. The loss is already averaged over target tokens by cross entropy, so it should not be divided by cumulative token count again.
@@ -187,7 +198,9 @@ The CSV also records repeated run settings and learned-parameter diagnostics:
 - run settings: `parameters`, `max_steps`, `warmup_steps`, `target_tokens`, `context_length`, `micro_batch_size`, `gradient_accumulation_steps`, `world_size`, `effective_batch_tokens`, `token_budget_multiplier`, `learning_rate`, `weight_decay`, `grad_clip`
 - SigmoidZ/DyT diagnostics: `alpha_mean`, `alpha_std`, `alpha_min`, `alpha_max`, `alpha_grad_abs_mean`, `logit_bias_mean`, `logit_bias_std`, `logit_bias_abs_max`, `norm_weight_mean`, `norm_weight_std`, `norm_bias_mean`, `norm_bias_std`, `param_norm`
 
-W&B also defines `train/tokens` as the step metric for `train/loss`, `train/ppl`, `train/lr`, `train/grad_norm`, `train/tokens_per_second`, `train/param_norm`, `sigmoidz/*`, and `hparams/*`, so curves are plotted against training tokens rather than optimizer steps.
+When validation is enabled, `val_metrics.csv` records `val_loss` and `val_ppl` at each validation interval.
+
+W&B also defines `train/tokens` as the step metric for `train/loss`, `train/ppl`, `train/lr`, `train/grad_norm`, `train/tokens_per_second`, `train/param_norm`, `val/loss`, `val/ppl`, `sigmoidz/*`, and `hparams/*`, so curves are plotted against training tokens rather than optimizer steps.
 
 Resume from the newest checkpoint:
 

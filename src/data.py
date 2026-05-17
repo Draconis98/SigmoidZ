@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
@@ -71,16 +72,29 @@ def load_token_ids(train_cfg: TrainConfig, model_cfg: ModelConfig) -> tuple[torc
 
 
 class RandomTokenBatcher:
-    def __init__(self, token_ids: torch.Tensor, context_length: int, batch_size: int, device: torch.device) -> None:
+    def __init__(
+        self,
+        token_ids: torch.Tensor,
+        context_length: int,
+        batch_size: int,
+        device: torch.device,
+        generator: torch.Generator | None = None,
+    ) -> None:
         assert token_ids.ndim == 1
         assert token_ids.numel() > context_length + 1
         self.token_ids = token_ids
         self.context_length = context_length
         self.batch_size = batch_size
         self.device = device
+        self.generator = generator
 
     def next(self) -> tuple[torch.Tensor, torch.Tensor]:
-        starts = torch.randint(0, self.token_ids.numel() - self.context_length - 1, (self.batch_size,))
+        starts = torch.randint(
+            0,
+            self.token_ids.numel() - self.context_length - 1,
+            (self.batch_size,),
+            generator=self.generator,
+        )
         rows = [self.token_ids[s : s + self.context_length + 1] for s in starts]
         batch = torch.stack(rows).to(self.device)
         return batch[:, :-1], batch[:, 1:]
@@ -160,3 +174,37 @@ def build_batcher(
         return batcher, batcher.vocab_size
     token_ids, vocab_size = load_token_ids(train_cfg, model_cfg)
     return RandomTokenBatcher(token_ids, model_cfg.context_length, train_cfg.batch_size, device), vocab_size
+
+
+def build_validation_batcher(
+    train_cfg: TrainConfig,
+    model_cfg: ModelConfig,
+    device: torch.device,
+) -> tuple[Batcher, int] | None:
+    if train_cfg.val_interval is None or train_cfg.val_interval <= 0:
+        return None
+    assert train_cfg.val_steps > 0, "val_steps must be positive when validation is enabled"
+
+    val_cfg = replace(
+        train_cfg,
+        streaming=False,
+        max_train_tokens=train_cfg.max_val_tokens,
+    )
+    if train_cfg.val_text_file is not None:
+        val_cfg.text_file = train_cfg.val_text_file
+    elif train_cfg.dataset_name is not None:
+        assert train_cfg.val_dataset_split is not None, (
+            "val_interval requires val_dataset_split for dataset validation"
+        )
+        val_cfg.dataset_split = train_cfg.val_dataset_split
+
+    token_ids, vocab_size = load_token_ids(val_cfg, model_cfg)
+    generator = torch.Generator().manual_seed(train_cfg.seed + 10_000)
+    batcher = RandomTokenBatcher(
+        token_ids,
+        model_cfg.context_length,
+        train_cfg.batch_size,
+        device,
+        generator=generator,
+    )
+    return batcher, vocab_size

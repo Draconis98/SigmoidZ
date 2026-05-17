@@ -14,7 +14,7 @@ from tqdm import trange
 from transformers import get_cosine_schedule_with_warmup
 
 from config import load_config, to_dict
-from data import build_batcher
+from data import Batcher, build_batcher, build_validation_batcher
 from model import CausalLM
 from modules import DyT, SigmoidZNorm
 from utils import (
@@ -37,6 +37,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--out_dir", type=str, default=None)
     parser.add_argument("--save_interval", type=int, default=None)
+    parser.add_argument("--val_interval", type=int, default=None)
+    parser.add_argument("--val_steps", type=int, default=None)
+    parser.add_argument("--val_dataset_split", type=str, default=None)
+    parser.add_argument("--val_text_file", type=str, default=None)
+    parser.add_argument("--max_val_tokens", type=int, default=None)
     parser.add_argument("--keep_checkpoints", type=int, default=None)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--resume", type=str, default=None)
@@ -159,6 +164,15 @@ METRIC_FIELDS = [
     "param_norm",
 ]
 
+VAL_METRIC_FIELDS = [
+    "step",
+    "tokens",
+    "val_loss",
+    "val_ppl",
+    "val_steps",
+    "val_dataset_split",
+]
+
 
 def _stack_scalars(tensors: list[torch.Tensor]) -> torch.Tensor | None:
     if not tensors:
@@ -236,15 +250,42 @@ def collect_train_diagnostics(raw_model: CausalLM) -> dict[str, float]:
     return stats
 
 
-def format_csv_row(row: dict[str, float | int | None]) -> str:
+def format_csv_row(
+    row: dict[str, float | int | str | None],
+    fields: list[str] = METRIC_FIELDS,
+) -> str:
     values = []
-    for field in METRIC_FIELDS:
+    for field in fields:
         value = row[field]
         if isinstance(value, float):
             values.append(f"{value:.8g}")
         else:
             values.append(str(value))
     return ",".join(values)
+
+
+@torch.no_grad()
+def evaluate_loss(
+    model: torch.nn.Module,
+    batcher: Batcher,
+    steps: int,
+    device: torch.device,
+    dtype: torch.dtype | None,
+    use_amp: bool,
+) -> tuple[float, float]:
+    was_training = model.training
+    model.eval()
+    losses = []
+    for _ in range(steps):
+        x, y = batcher.next()
+        with torch.autocast(device_type=device.type, dtype=dtype, enabled=use_amp):
+            _, loss = model(x, y)
+        assert loss is not None
+        losses.append(float(loss.item()))
+    if was_training:
+        model.train()
+    mean_loss = sum(losses) / len(losses)
+    return mean_loss, math.exp(min(mean_loss, 20.0))
 
 
 def main() -> None:
@@ -262,6 +303,16 @@ def main() -> None:
         cfg.train.out_dir = args.out_dir
     if args.save_interval is not None:
         cfg.train.save_interval = args.save_interval
+    if args.val_interval is not None:
+        cfg.train.val_interval = args.val_interval
+    if args.val_steps is not None:
+        cfg.train.val_steps = args.val_steps
+    if args.val_dataset_split is not None:
+        cfg.train.val_dataset_split = args.val_dataset_split
+    if args.val_text_file is not None:
+        cfg.train.val_text_file = args.val_text_file
+    if args.max_val_tokens is not None:
+        cfg.train.max_val_tokens = args.max_val_tokens
     if args.keep_checkpoints is not None:
         cfg.train.keep_checkpoints = args.keep_checkpoints
     if args.wandb:
@@ -276,6 +327,15 @@ def main() -> None:
     out_dir = Path(cfg.train.out_dir)
     batcher, vocab_size = build_batcher(cfg.train, cfg.model, device, rank, world_size)
     cfg.model.vocab_size = vocab_size
+    val_batcher = None
+    if rank == 0:
+        val_built = build_validation_batcher(cfg.train, cfg.model, device)
+        if val_built is not None:
+            val_batcher, val_vocab_size = val_built
+            assert val_vocab_size == cfg.model.vocab_size, (
+                f"validation vocab size {val_vocab_size} does not match training vocab size "
+                f"{cfg.model.vocab_size}"
+            )
     model = CausalLM(cfg.model).to(device)
     raw_model = model
     if is_ddp():
@@ -330,6 +390,7 @@ def main() -> None:
     wandb_run = None
     log_file = None
     metrics_file = None
+    val_metrics_file = None
     if rank == 0:
         out_dir.mkdir(parents=True, exist_ok=True)
         save_json(out_dir / "config.json", to_dict(cfg))
@@ -338,6 +399,11 @@ def main() -> None:
         metrics_file = metrics_path.open("a")
         if metrics_path.stat().st_size == 0:
             metrics_file.write(",".join(METRIC_FIELDS) + "\n")
+        if val_batcher is not None:
+            val_metrics_path = out_dir / "val_metrics.csv"
+            val_metrics_file = val_metrics_path.open("a")
+            if val_metrics_path.stat().st_size == 0:
+                val_metrics_file.write(",".join(VAL_METRIC_FIELDS) + "\n")
         model_text = str(raw_model)
         (out_dir / "model.txt").write_text(model_text + "\n")
         print(
@@ -347,6 +413,11 @@ def main() -> None:
             f"context={cfg.model.context_length} micro_batch={cfg.train.batch_size} "
             f"grad_accum={cfg.train.gradient_accumulation_steps} device={device} world_size={world_size}"
         )
+        if val_batcher is not None:
+            print(
+                f"validation interval={cfg.train.val_interval} steps={cfg.train.val_steps} "
+                f"split={cfg.train.val_dataset_split}"
+            )
         print(model_text)
         if resume_path is not None:
             print(f"resumed_from={resume_path} start_step={start_step}")
@@ -368,6 +439,8 @@ def main() -> None:
             wandb.define_metric("train/grad_norm", step_metric="train/tokens")
             wandb.define_metric("train/tokens_per_second", step_metric="train/tokens")
             wandb.define_metric("train/param_norm", step_metric="train/tokens")
+            wandb.define_metric("val/loss", step_metric="train/tokens")
+            wandb.define_metric("val/ppl", step_metric="train/tokens")
             wandb.define_metric("sigmoidz/*", step_metric="train/tokens")
             wandb.define_metric("hparams/*", step_metric="train/tokens")
             if cfg.train.wandb_watch_model:
@@ -449,7 +522,7 @@ def main() -> None:
             log_file.write(log_line + "\n")
             log_file.flush()
             assert metrics_file is not None
-            metrics_file.write(format_csv_row(metrics) + "\n")
+            metrics_file.write(format_csv_row(metrics, METRIC_FIELDS) + "\n")
             metrics_file.flush()
             iterator.set_description(f"loss={loss_value:.4f} ppl={ppl:.2f} lr={lr:.2e}")
             if wandb_run is not None:
@@ -482,6 +555,47 @@ def main() -> None:
                         "sigmoidz/norm_weight_std": metrics["norm_weight_std"],
                         "sigmoidz/norm_bias_mean": metrics["norm_bias_mean"],
                         "sigmoidz/norm_bias_std": metrics["norm_bias_std"],
+                    },
+                    step=step,
+                )
+
+        if (
+            rank == 0
+            and val_batcher is not None
+            and cfg.train.val_interval is not None
+            and step % cfg.train.val_interval == 0
+        ):
+            val_loss, val_ppl = evaluate_loss(
+                raw_model,
+                val_batcher,
+                cfg.train.val_steps,
+                device,
+                dtype,
+                use_amp,
+            )
+            tokens_seen = step * global_tokens_per_step
+            val_metrics = {
+                "step": step,
+                "tokens": tokens_seen,
+                "val_loss": val_loss,
+                "val_ppl": val_ppl,
+                "val_steps": cfg.train.val_steps,
+                "val_dataset_split": cfg.train.val_dataset_split,
+            }
+            val_log_line = f"step={step} val_loss={val_loss:.4f} val_ppl={val_ppl:.2f}"
+            print(val_log_line)
+            assert log_file is not None
+            log_file.write(val_log_line + "\n")
+            log_file.flush()
+            assert val_metrics_file is not None
+            val_metrics_file.write(format_csv_row(val_metrics, VAL_METRIC_FIELDS) + "\n")
+            val_metrics_file.flush()
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        "train/tokens": tokens_seen,
+                        "val/loss": val_loss,
+                        "val/ppl": val_ppl,
                     },
                     step=step,
                 )
@@ -522,6 +636,8 @@ def main() -> None:
             log_file.close()
         if metrics_file is not None:
             metrics_file.close()
+        if val_metrics_file is not None:
+            val_metrics_file.close()
     if is_ddp():
         dist.destroy_process_group()
 

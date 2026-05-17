@@ -28,6 +28,9 @@ class TrainConfig:
     dataset_config: str | None = None
     dataset_split: str = "train"
     max_train_tokens: int | None = None
+    val_dataset_split: str | None = None
+    val_text_file: str | None = None
+    max_val_tokens: int | None = None
     streaming: bool = False
     text_file: str | None = None
     batch_size: int = 16
@@ -40,6 +43,8 @@ class TrainConfig:
     warmup_ratio: float | None = 0.01
     grad_clip: float = 1.0
     log_interval: int = 5
+    val_interval: int | None = None
+    val_steps: int = 20
     save_interval: int = 100
     keep_checkpoints: int = 3
     resume_from: str | None = None
@@ -84,6 +89,9 @@ def fifty_m_config() -> ExperimentConfig:
             dataset_name="wikitext",
             dataset_config="wikitext-103-raw-v1",
             streaming=True,
+            val_dataset_split="validation",
+            val_interval=100,
+            val_steps=20,
             batch_size=2,
             gradient_accumulation_steps=1,
             max_steps=None,
