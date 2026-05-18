@@ -76,6 +76,35 @@ def rotate_checkpoints(out_dir: Path, keep: int) -> None:
         path.unlink()
 
 
+def build_optimizer(model: torch.nn.Module, learning_rate: float, weight_decay: float) -> torch.optim.Optimizer:
+    decay_params = []
+    no_decay_params = []
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        no_decay = (
+            parameter.ndim < 2
+            or name.endswith(".bias")
+            or name.endswith(".alpha")
+            or name.endswith(".logit_bias")
+            or ".norm." in name
+            or name.endswith("_norm.weight")
+        )
+        if no_decay:
+            no_decay_params.append(parameter)
+        else:
+            decay_params.append(parameter)
+
+    return torch.optim.AdamW(
+        [
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": no_decay_params, "weight_decay": 0.0},
+        ],
+        lr=learning_rate,
+        betas=(0.9, 0.95),
+    )
+
+
 def save_checkpoint(
     out_dir: Path,
     step: int,
@@ -366,12 +395,7 @@ def main() -> None:
         cfg.train.warmup_steps = int(math.ceil(cfg.train.max_steps * cfg.train.warmup_ratio))
     assert cfg.train.warmup_steps >= 0
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=cfg.train.learning_rate,
-        weight_decay=cfg.train.weight_decay,
-        betas=(0.9, 0.95),
-    )
+    optimizer = build_optimizer(model, cfg.train.learning_rate, cfg.train.weight_decay)
     scheduler = get_cosine_schedule_with_warmup(
         optimizer, cfg.train.warmup_steps, cfg.train.max_steps
     )

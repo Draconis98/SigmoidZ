@@ -16,6 +16,9 @@ class ModelConfig:
     intermediate_size: int = 512
     dropout: float = 0.0
     norm_type: str = "sigmoidz"
+    attn_norm_type: str | None = None
+    ffn_norm_type: str | None = None
+    final_norm_type: str | None = None
     block_variant: str = "conservative"
     alpha_attn: float = 0.8
     alpha_other: float = 0.2
@@ -80,8 +83,11 @@ def fifty_m_config() -> ExperimentConfig:
             num_heads=6,
             intermediate_size=1536,
             norm_type="sigmoidz",
+            attn_norm_type="sigmoidz",
+            ffn_norm_type="rmsnorm",
+            final_norm_type="rmsnorm",
             block_variant="conservative",
-            alpha_attn=0.8,
+            alpha_attn=0.2,
             alpha_other=0.2,
         ),
         train=TrainConfig(

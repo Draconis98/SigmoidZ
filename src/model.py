@@ -16,6 +16,9 @@ class CausalLM(nn.Module):
         assert cfg.hidden_size % cfg.num_heads == 0
         self.cfg = cfg
         self.tok_embeddings = nn.Embedding(cfg.vocab_size, cfg.hidden_size)
+        attn_norm_type = cfg.attn_norm_type or cfg.norm_type
+        ffn_norm_type = cfg.ffn_norm_type or cfg.norm_type
+        final_norm_type = cfg.final_norm_type or cfg.norm_type
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
@@ -24,7 +27,8 @@ class CausalLM(nn.Module):
                     hidden_dim=cfg.intermediate_size,
                     dropout=cfg.dropout,
                     max_seq_len=cfg.context_length,
-                    norm_type=cfg.norm_type,
+                    attn_norm_type=attn_norm_type,
+                    ffn_norm_type=ffn_norm_type,
                     block_variant=cfg.block_variant,
                     alpha_attn=cfg.alpha_attn,
                     alpha_other=cfg.alpha_other,
@@ -32,7 +36,7 @@ class CausalLM(nn.Module):
                 for _ in range(cfg.num_layers)
             ]
         )
-        self.norm = make_norm(cfg.norm_type, cfg.hidden_size, cfg.alpha_other)
+        self.norm = make_norm(final_norm_type, cfg.hidden_size, cfg.alpha_other)
         self.output = nn.Linear(cfg.hidden_size, cfg.vocab_size, bias=False)
         self.output.weight = self.tok_embeddings.weight
         self.apply(self._init_weights)

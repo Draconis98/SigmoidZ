@@ -260,6 +260,9 @@ Set these fields in a JSON config:
 {
   "model": {
     "norm_type": "sigmoidz",
+    "attn_norm_type": "sigmoidz",
+    "ffn_norm_type": "rmsnorm",
+    "final_norm_type": "rmsnorm",
     "block_variant": "conservative"
   }
 }
@@ -276,12 +279,14 @@ Supported `block_variant` values:
 - `conservative`
 - `research`
 
+`norm_type` remains the default for all normalization sites. Set `attn_norm_type`, `ffn_norm_type`, or `final_norm_type` to override individual sites for hybrid ablations.
+
 ## Notes
 
 The DyT LLM recipe trains LLaMA models on The Pile and tunes the initial DyT slope by scale and block type. SigmoidZ follows the same practical idea with:
 
 - `alpha_attn`: initial slope for attention block normalization
-- `alpha_other`: initial slope for FFN and final normalization
+- `alpha_other`: initial slope for FFN and final normalization when those sites use SigmoidZNorm
 
 These config values are initial values. In `SigmoidZNorm`, `alpha`, `logit_bias` (`beta`), `weight` (`gamma`), and `bias` (`delta`) are all learned parameters.
 

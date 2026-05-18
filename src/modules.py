@@ -129,7 +129,8 @@ class TransformerBlock(nn.Module):
         hidden_dim: int,
         dropout: float,
         max_seq_len: int,
-        norm_type: str,
+        attn_norm_type: str,
+        ffn_norm_type: str,
         block_variant: str,
         alpha_attn: float,
         alpha_other: float,
@@ -137,8 +138,8 @@ class TransformerBlock(nn.Module):
         super().__init__()
         assert block_variant in {"conservative", "research"}
         self.block_variant = block_variant
-        self.attn_norm = make_norm(norm_type, dim, alpha_attn)
-        self.ffn_norm = make_norm(norm_type, dim, alpha_other)
+        self.attn_norm = make_norm(attn_norm_type, dim, alpha_attn)
+        self.ffn_norm = make_norm(ffn_norm_type, dim, alpha_other)
         if block_variant == "research":
             self.attn = SigmoidZAttentionUpdate(dim, num_heads, dropout, max_seq_len)
         else:
