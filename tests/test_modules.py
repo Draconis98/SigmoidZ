@@ -1,6 +1,6 @@
 import torch
 
-from modules import DyT, SigmoidZNorm
+from modules import CausalSelfAttention, DyT, SigmoidZAttentionUpdate, SigmoidZNorm
 
 
 def test_sigmoidz_matches_dyt_when_bias_zero() -> None:
@@ -21,4 +21,21 @@ def test_sigmoidz_backward() -> None:
     y = norm(x).sum()
     y.backward()
     assert x.grad is not None
+    assert torch.isfinite(x.grad).all()
+
+
+def test_attention_message_matches_forward_shape() -> None:
+    x = torch.randn(2, 6, 16)
+    attn = CausalSelfAttention(dim=16, num_heads=4, dropout=0.0, max_seq_len=8)
+    assert attn.message(x).shape == x.shape
+    assert attn(x).shape == x.shape
+
+
+def test_sigmoidz_attention_update_backward() -> None:
+    x = torch.randn(2, 6, 16, requires_grad=True)
+    update = SigmoidZAttentionUpdate(dim=16, num_heads=4, dropout=0.0, max_seq_len=8)
+    y = update(x).sum()
+    y.backward()
+    assert x.grad is not None
+    assert update.logit_bias.grad is not None
     assert torch.isfinite(x.grad).all()

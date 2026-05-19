@@ -85,14 +85,14 @@ $$
 The binary MFVI update can then be written as:
 
 $$
-Z = \operatorname{sigmoid}(U(X) + P(M))
+Z = \operatorname{sigmoid}(\beta + U(X) + P(M))
 $$
 
 $$
 Y = O(2Z - 1)
 $$
 
-$U$ is the unary term, $P$ is the pairwise interaction term, and $O$ maps the centered Bernoulli mean back to the model width.
+$\beta$ is a per-channel log-odds bias, $U$ is the unary term, $P$ is the pairwise interaction term, and $O$ maps the centered Bernoulli mean back to the model width.
 
 This gives the research variant:
 
@@ -101,7 +101,11 @@ A = \operatorname{causal\_attention}(X)
 $$
 
 $$
-Z = \operatorname{sigmoid}(\operatorname{unary}(X) + \operatorname{pairwise}(A))
+M = A V
+$$
+
+$$
+Z = \operatorname{sigmoid}(\beta + \operatorname{unary}(X) + \operatorname{pairwise}(M))
 $$
 
 $$

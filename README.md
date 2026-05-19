@@ -281,6 +281,22 @@ Supported `block_variant` values:
 
 `norm_type` remains the default for all normalization sites. Set `attn_norm_type`, `ffn_norm_type`, or `final_norm_type` to override individual sites for hybrid ablations.
 
+For `research`, prefer RMSNorm at the surrounding normalization sites and let `SigmoidZAttentionUpdate` supply the Bernoulli update internally:
+
+```json
+{
+  "model": {
+    "norm_type": "rmsnorm",
+    "attn_norm_type": "rmsnorm",
+    "ffn_norm_type": "rmsnorm",
+    "final_norm_type": "rmsnorm",
+    "block_variant": "research"
+  }
+}
+```
+
+Use `configs/50m_sigmoidz_research.json` for this setup.
+
 ## Notes
 
 The DyT LLM recipe trains LLaMA models on The Pile and tunes the initial DyT slope by scale and block type. SigmoidZ follows the same practical idea with:

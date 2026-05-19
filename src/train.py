@@ -16,7 +16,7 @@ from transformers import get_cosine_schedule_with_warmup
 from config import load_config, to_dict
 from data import Batcher, build_batcher, build_validation_batcher
 from model import CausalLM
-from modules import DyT, SigmoidZNorm
+from modules import DyT, SigmoidZAttentionUpdate, SigmoidZNorm
 from utils import (
     amp_dtype,
     is_ddp,
@@ -240,6 +240,8 @@ def collect_train_diagnostics(raw_model: CausalLM) -> dict[str, float]:
             norm_bias_values.append(module.bias)
             if isinstance(module, SigmoidZNorm):
                 logit_bias_values.append(module.logit_bias)
+        elif isinstance(module, SigmoidZAttentionUpdate):
+            logit_bias_values.append(module.logit_bias)
 
     stats = _mean_std_min_max(_stack_scalars(alpha_values), "alpha")
     alpha_grad = _stack_scalars(alpha_grads)

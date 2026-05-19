@@ -83,7 +83,7 @@ class CausalSelfAttention(nn.Module):
         self.dropout = dropout
         self.register_buffer("freqs_cis", precompute_rope_frequencies(self.head_dim, max_seq_len), persistent=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def message(self, x: torch.Tensor) -> torch.Tensor:
         bsz, seq_len, dim = x.shape
         q, k, v = self.qkv(x).chunk(3, dim=-1)
         q = q.view(bsz, seq_len, self.num_heads, self.head_dim)
@@ -92,7 +92,10 @@ class CausalSelfAttention(nn.Module):
         q = apply_rope(q, self.freqs_cis).transpose(1, 2)
         k = apply_rope(k, self.freqs_cis).transpose(1, 2)
         y = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.0, is_causal=True)
-        return self.out(y.transpose(1, 2).contiguous().view(bsz, seq_len, dim))
+        return y.transpose(1, 2).contiguous().view(bsz, seq_len, dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.out(self.message(x))
 
 
 class SigmoidZAttentionUpdate(nn.Module):
@@ -101,10 +104,12 @@ class SigmoidZAttentionUpdate(nn.Module):
         self.attn = CausalSelfAttention(dim, num_heads, dropout, max_seq_len)
         self.unary = nn.Linear(dim, dim, bias=False)
         self.pairwise = nn.Linear(dim, dim, bias=False)
+        self.logit_bias = nn.Parameter(torch.zeros(dim))
         self.out = nn.Linear(dim, dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        logits = self.unary(x) + self.pairwise(self.attn(x))
+        message = self.attn.message(x)
+        logits = self.unary(x) + self.pairwise(message) + self.logit_bias
         z = 2.0 * torch.sigmoid(logits) - 1.0
         return self.out(z)
 
