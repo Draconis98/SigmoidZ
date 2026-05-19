@@ -101,15 +101,51 @@ class CausalSelfAttention(nn.Module):
 class SigmoidZAttentionUpdate(nn.Module):
     def __init__(self, dim: int, num_heads: int, dropout: float, max_seq_len: int) -> None:
         super().__init__()
-        self.attn = CausalSelfAttention(dim, num_heads, dropout, max_seq_len)
+        assert dim % num_heads == 0
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.qk = nn.Linear(dim, 2 * dim, bias=False)
+        self.neighbor_logits = nn.Linear(dim, dim, bias=False)
         self.unary = nn.Linear(dim, dim, bias=False)
-        self.pairwise = nn.Linear(dim, dim, bias=False)
+        self.pairwise_active = nn.Linear(dim, dim, bias=False)
+        self.pairwise_inactive = nn.Linear(dim, dim, bias=False)
+        self.neighbor_logit_bias = nn.Parameter(torch.zeros(dim))
         self.logit_bias = nn.Parameter(torch.zeros(dim))
         self.out = nn.Linear(dim, dim, bias=False)
+        self.dropout = dropout
+        self.register_buffer("freqs_cis", precompute_rope_frequencies(self.head_dim, max_seq_len), persistent=False)
+
+    def _attention_messages(
+        self, q: torch.Tensor, k: torch.Tensor, active_state: torch.Tensor, inactive_state: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        bsz, seq_len, dim = active_state.shape
+        active_state = active_state.view(bsz, seq_len, self.num_heads, self.head_dim)
+        inactive_state = inactive_state.view(bsz, seq_len, self.num_heads, self.head_dim)
+        v = torch.cat([active_state, inactive_state], dim=-1).transpose(1, 2)
+        y = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.0, is_causal=True)
+        active_message, inactive_message = y.split(self.head_dim, dim=-1)
+        active_message = active_message.transpose(1, 2).contiguous().view(bsz, seq_len, dim)
+        inactive_message = inactive_message.transpose(1, 2).contiguous().view(bsz, seq_len, dim)
+        return active_message, inactive_message
+
+    def messages(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        bsz, seq_len, _ = x.shape
+        q, k = self.qk(x).chunk(2, dim=-1)
+        q = q.view(bsz, seq_len, self.num_heads, self.head_dim)
+        k = k.view(bsz, seq_len, self.num_heads, self.head_dim)
+        q = apply_rope(q, self.freqs_cis).transpose(1, 2)
+        k = apply_rope(k, self.freqs_cis).transpose(1, 2)
+        neighbor_state = torch.sigmoid(self.neighbor_logits(x) + self.neighbor_logit_bias)
+        return self._attention_messages(q, k, neighbor_state, 1.0 - neighbor_state)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        message = self.attn.message(x)
-        logits = self.unary(x) + self.pairwise(message) + self.logit_bias
+        active_message, inactive_message = self.messages(x)
+        logits = (
+            self.unary(x)
+            + self.pairwise_active(active_message)
+            + self.pairwise_inactive(inactive_message)
+            + self.logit_bias
+        )
         z = 2.0 * torch.sigmoid(logits) - 1.0
         return self.out(z)
 

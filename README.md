@@ -5,15 +5,19 @@ SigmoidZ explores a small change to the Probabilistic Transformer view of contex
 The repo keeps two variants:
 
 - `conservative`: replace RMSNorm/LayerNorm-style layers with `SigmoidZNorm`.
-- `research`: use a sigmoid mean-field-style update inside the attention path.
+- `research`: use active and inactive Bernoulli mean-field messages inside the attention path.
 
 The default is a decoder-only causal LM with the conservative variant.
 
 ## Theory
 
-The binary MFVI update is:
+The binary MFVI coordinate update is:
 
-$$q_{i,a} = Q(Z_{i,a} = 1) = \sigma(S_{i,a} + G_{i,a})$$
+$$q_{i,a} = Q(Z_{i,a} = 1) = \sigma(\eta_{i,a})$$
+
+with:
+
+$$\eta_{i,a} = s_{i,a} + \sum_j r_{i,j}\sum_b\left[q_{j,b}\Delta t_{a,b}(1) + (1-q_{j,b})\Delta t_{a,b}(0)\right]$$
 
 The centered representation is:
 

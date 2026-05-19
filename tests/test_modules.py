@@ -38,4 +38,14 @@ def test_sigmoidz_attention_update_backward() -> None:
     y.backward()
     assert x.grad is not None
     assert update.logit_bias.grad is not None
+    assert update.neighbor_logit_bias.grad is not None
     assert torch.isfinite(x.grad).all()
+
+
+def test_sigmoidz_attention_messages_are_bernoulli_expectations() -> None:
+    x = torch.randn(2, 6, 16)
+    update = SigmoidZAttentionUpdate(dim=16, num_heads=4, dropout=0.0, max_seq_len=8)
+    active_message, inactive_message = update.messages(x)
+    assert active_message.shape == x.shape
+    assert inactive_message.shape == x.shape
+    torch.testing.assert_close(active_message + inactive_message, torch.ones_like(x), atol=1e-6, rtol=1e-6)

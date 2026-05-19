@@ -1,183 +1,371 @@
 # SigmoidZ Theory Notes
 
-This note records the working derivation behind SigmoidZ. The goal is not to prove that the architecture is better than RMSNorm or DyT. The goal is to make the modeling assumption explicit, derive the corresponding mean-field update, and map that update to Transformer components.
+This note records the working derivation behind SigmoidZ. The goal is not to
+prove that the architecture is better than RMSNorm or DyT. The goal is to make
+the modeling assumption explicit, derive the corresponding mean-field update,
+and map that update to Transformer components.
 
 ## 1. Starting Point
 
-Probabilistic Transformer (PT) models contextual word representation with a dependency variable $H_i$ and latent labels $Z_i$. Under mean-field variational inference, the updates can be written in a vectorized form that resembles self-attention plus a feed-forward representation update.
+Probabilistic Transformer (PT) models contextual word representation with a
+dependency variable $H_i$ and latent labels $Z_i$. In the original categorical
+view, $Z_i$ is one label from a set of size $d$, so the MFVI update normalizes
+with a softmax over labels.
 
-The modification here is:
-
-$$
-\text{Original PT: } Z_i \text{ is one label from a set of size } d
-$$
-
-$$
-\text{SigmoidZ: } Z_i \text{ is a binary vector in } \{0, 1\}^d
-$$
-
-Each hidden coordinate is now a Bernoulli latent variable. Its mean parameter is:
+SigmoidZ changes the latent state to a binary vector:
 
 $$
-q_{i,a} = Q(Z_{i,a} = 1)
+Z_i = (Z_{i,1}, \ldots, Z_{i,d}), \qquad Z_{i,a} \in \{0, 1\}.
 $$
 
-This makes the hidden representation interpretable as a vector of Bernoulli probabilities, or as a centered version $2q_i - 1$.
-
-## 2. Binary MFVI Update
-
-Use a unary potential for each active coordinate:
+Each hidden coordinate is now a Bernoulli latent variable. Under a factorized
+mean-field approximation,
 
 $$
-\phi_u(Z_{i,a} = 1) = \exp(S_{i,a})
+Q(H, Z) = \prod_i Q(H_i) \prod_{i,a} Q(Z_{i,a}),
 $$
 
-$$
-\phi_u(Z_{i,a} = 0) = 1
-$$
-
-Use pairwise potentials that couple $Z_{i,a}$ and $Z_{j,b}$ when token $j$ is the dependency head of token $i$.
-
-For the simplest active-active coupling:
+write:
 
 $$
-\phi_t(H_i = j, Z_{i,a} = 1, Z_{j,b} = 1) = \exp(T_{a,b})
+r_{i,j} = Q(H_i = j), \qquad q_{i,a} = Q(Z_{i,a} = 1).
+$$
+
+The hidden representation can be read either as probabilities $q_i$ or as a
+centered Bernoulli mean:
+
+$$
+m_i = 2q_i - 1 \in (-1, 1)^d.
+$$
+
+The important change is:
+
+$$
+\text{categorical latent label} \Rightarrow \text{softmax update},
 $$
 
 $$
-\phi_t(\text{other cases}) = 1
+\text{factorized Bernoulli latent coordinates} \Rightarrow \text{sigmoid log-odds update}.
 $$
 
-The mean-field update for coordinate $a$ is:
+## 2. Potentials
+
+Use a unary log-potential for token $i$ and coordinate $a$:
 
 $$
-Q(Z_{i,a} = 1) \propto \exp(S_{i,a} + G_{i,a})
+\log \phi_u(Z_{i,a} = z) = u_{i,a}(z).
 $$
 
-$$
-Q(Z_{i,a} = 0) \propto \exp(0)
-$$
-
-where $G_{i,a}$ is the expected pairwise contribution under the current distributions of dependency heads and neighboring binary variables.
-
-Normalizing the two states gives:
+The unary log-odds are:
 
 $$
-q_{i,a} = \operatorname{sigmoid}(S_{i,a} + G_{i,a})
+s_{i,a} = u_{i,a}(1) - u_{i,a}(0).
 $$
 
-This is the central SigmoidZ update.
-
-## 3. Vectorized Transformer Mapping
-
-The dependency distribution $Q(H_i = j)$ maps naturally to attention:
+Use a dependency-conditioned pairwise log-potential between dependent token $i$
+and head token $j$:
 
 $$
-A = \operatorname{softmax}\!\left(\frac{QK^T}{\sqrt{d_{\text{head}}}}\right)
+\log \phi_p(H_i = j, Z_{i,a} = z, Z_{j,b} = z') = t_{a,b}(z, z').
 $$
 
-The expected neighboring state maps to an attention aggregation:
+For coordinate $Z_{i,a}$, the only part that matters in the Bernoulli update is
+the log-potential difference between setting the coordinate to 1 versus 0:
 
 $$
-M = AV
+\Delta t_{a,b}(z') = t_{a,b}(1, z') - t_{a,b}(0, z').
 $$
 
-The binary MFVI update can then be written as:
+The most compact active-active special case is:
 
 $$
-Z = \operatorname{sigmoid}(\beta + U(X) + P(M))
+t_{a,b}(1, 1) = T_{a,b},
 $$
 
 $$
-Y = O(2Z - 1)
+t_{a,b}(1, 0) = t_{a,b}(0, 1) = t_{a,b}(0, 0) = 0,
 $$
 
-$\beta$ is a per-channel log-odds bias, $U$ is the unary term, $P$ is the pairwise interaction term, and $O$ maps the centered Bernoulli mean back to the model width.
-
-This gives the research variant:
+which gives:
 
 $$
-A = \operatorname{causal\_attention}(X)
+\Delta t_{a,b}(1) = T_{a,b}, \qquad \Delta t_{a,b}(0) = 0.
+$$
+
+This active-active case is the simplest ablation. The current
+`SigmoidZAttentionUpdate` implements the more general two-branch form by
+aggregating both $q_{j,b}$ and $1-q_{j,b}$ messages.
+
+## 3. MFVI Coordinate Update
+
+The coordinate-wise MFVI optimum is:
+
+$$
+\log Q^*(Z_{i,a} = z) =
+\mathbb{E}_{Q_{-i,a}}[\log p(H, Z \mid X)] + \text{const}.
+$$
+
+Therefore the Bernoulli log-odds are:
+
+$$
+\eta_{i,a}
+= \log \frac{Q^*(Z_{i,a}=1)}{Q^*(Z_{i,a}=0)}
+= \mathbb{E}_{Q_{-i,a}}
+\left[
+\log p(Z_{i,a}=1, H, Z_{-i,a}\mid X)
+- \log p(Z_{i,a}=0, H, Z_{-i,a}\mid X)
+\right].
+$$
+
+Substituting the unary and pairwise potentials gives the general update:
+
+$$
+\eta_{i,a}
+= s_{i,a}
++ \sum_j r_{i,j} \sum_b
+\left[
+q_{j,b} \Delta t_{a,b}(1)
++ (1 - q_{j,b}) \Delta t_{a,b}(0)
+\right].
+$$
+
+The normalized Bernoulli mean is:
+
+$$
+q_{i,a} = \sigma(\eta_{i,a}).
+$$
+
+This is the central SigmoidZ result. The categorical PT update uses a softmax
+because exactly one label is active. After replacing $Z_i$ by $\{0,1\}^d$, each
+coordinate has its own two-state log-odds, so the update is a sigmoid.
+
+For the active-active potential, the update reduces to:
+
+$$
+\eta_{i,a}
+= s_{i,a} + \sum_j r_{i,j} \sum_b q_{j,b} T_{a,b},
 $$
 
 $$
-M = A V
+q_{i,a} = \sigma
+\left(
+s_{i,a} + \sum_j r_{i,j} \sum_b q_{j,b} T_{a,b}
+\right).
+$$
+
+If the graph includes both parent-to-child and child-to-parent factors, another
+incoming-message term can be added. For a decoder-only causal Transformer, the
+practical mapping keeps the causal parent message: token $i$ attends only to
+allowed previous tokens $j \le i$.
+
+## 4. Vectorized Form
+
+Let the dependency distribution $r_{i,j}$ be represented by causal attention:
+
+$$
+A = \operatorname{softmax}
+\left(
+\frac{QK^T}{\sqrt{d_{\text{head}}}} + \operatorname{causal\_mask}
+\right).
+$$
+
+Let the expected neighboring Bernoulli active and inactive states be aggregated
+by attention:
+
+$$
+M_1 = A Q_Z, \qquad M_0 = A(1 - Q_Z).
+$$
+
+The MFVI update can then be written:
+
+$$
+\eta = \beta + U(X) + P_1(M_1) + P_0(M_0),
 $$
 
 $$
-Z = \operatorname{sigmoid}(\beta + \operatorname{unary}(X) + \operatorname{pairwise}(M))
+Z = \sigma(\eta),
 $$
 
 $$
-Y = \operatorname{out}(2Z - 1)
+Y = O(2Z - 1).
 $$
 
-## 4. Conservative Variant
+Here:
 
-The conservative version only replaces normalization layers. It keeps the standard LLaMA-style block:
+- $\beta$ is a learned prior log-odds bias.
+- $U(X)$ is the unary evidence for each Bernoulli coordinate.
+- $P_1(M_1)$ is the active-neighbor pairwise contribution.
+- $P_0(M_0)$ is the inactive-neighbor pairwise contribution.
+- $O$ maps the centered Bernoulli mean back to the model width.
 
-$$
-X = X + \operatorname{Attention}(\operatorname{Norm}(X))
-$$
-
-$$
-X = X + \operatorname{MLP}(\operatorname{Norm}(X))
-$$
-
-but uses:
+This gives the one-step MFVI Transformer block:
 
 $$
-\operatorname{SigmoidZNorm}(X) = \gamma \bigl(2 \operatorname{sigmoid}(2 \alpha X + \beta) - 1\bigr) + \delta
+\tilde X = \operatorname{Norm}(X),
 $$
 
-Here $\alpha$ is a learned scalar, $\beta$ is a learned per-channel logit bias, and $\gamma, \delta$ are learned affine parameters.
+$$
+A = \operatorname{causal\_attention}(\tilde X),
+$$
 
-## 5. Relation to DyT
+$$
+Q_Z = \sigma(W_z\tilde X + b_z),
+$$
+
+$$
+M_1 = A Q_Z, \qquad M_0 = A(1 - Q_Z),
+$$
+
+$$
+\eta = \beta + W_u \tilde X + W_{p1}M_1 + W_{p0}M_0,
+$$
+
+$$
+Y = W_o \left(2\sigma(\eta) - 1\right),
+$$
+
+$$
+X' = X + Y.
+$$
+
+Multi-head attention corresponds to multiple dependency distributions
+$r^{(h)}_{i,j}$. Concatenating head messages and applying $W_p$ is a low-rank,
+head-factorized approximation of the full pairwise tensor $T_{a,b}$.
+
+## 5. Transformer Structure Implications
+
+The binary MFVI derivation suggests three concrete architectural changes.
+
+### Bernoulli attention update
+
+Replace the standard attention value update:
+
+$$
+Y = W_o(AV)
+$$
+
+with a log-odds update:
+
+$$
+Y = W_o
+\left(
+2\sigma(\beta + W_u X + W_{p1} A Q_Z + W_{p0} A(1 - Q_Z)) - 1
+\right).
+$$
+
+This is the `research` variant in the codebase:
+
+```text
+neighbor_state = sigmoid(neighbor_logits(x) + neighbor_logit_bias)
+active_message = causal_attention_message(neighbor_state)
+inactive_message = causal_attention_message(1 - neighbor_state)
+logits = unary(x) + pairwise_active(active_message) + pairwise_inactive(inactive_message) + logit_bias
+z = 2 * sigmoid(logits) - 1
+out = output_projection(z)
+```
+
+The update keeps standard attention for the dependency distribution $Q(H_i)$,
+but changes the hidden-state update from an unconstrained linear value mixture
+to a bounded Bernoulli mean-field step.
+
+### Conservative SigmoidZ normalization
+
+A lower-risk approximation is to keep the standard Transformer block and only
+replace normalization-like transforms with a centered Bernoulli parameterization:
+
+$$
+\operatorname{SigmoidZNorm}(X)
+= \gamma \left(2\sigma(2\alpha X + \beta) - 1\right) + \delta.
+$$
+
+The block remains:
+
+$$
+X' = X + \operatorname{Attention}(\operatorname{SigmoidZNorm}(X)),
+$$
+
+$$
+X'' = X' + \operatorname{MLP}(\operatorname{Norm}(X')).
+$$
+
+This does not implement the full pairwise MFVI update, but it preserves the
+main Bernoulli interpretation at normalization sites and is easier to stabilize
+at LLM scale.
+
+### Optional iterative MFVI block
+
+The one-step block above is the direct Transformer analogue. A closer inference
+procedure would run a small number of inner MFVI iterations:
+
+$$
+q^{(t+1)} =
+\sigma\left(\beta + U(X) + P(A V(q^{(t)}))\right).
+$$
+
+In practice this is more expensive and can be harder to train. Stacking
+Transformer layers already provides repeated refinement, so the codebase uses
+one MFVI-style update per layer.
+
+## 6. Relation to DyT
 
 DyT uses:
 
 $$
-\operatorname{DyT}(X) = \gamma \tanh(\alpha X) + \delta
+\operatorname{DyT}(X) = \gamma \tanh(\alpha X) + \delta.
 $$
 
 Sigmoid and tanh are exactly related:
 
 $$
-\tanh(x) = 2 \operatorname{sigmoid}(2x) - 1
+\tanh(x) = 2\sigma(2x) - 1.
 $$
 
 Therefore, when $\beta = 0$, SigmoidZNorm is functionally equivalent to DyT:
 
 $$
-\operatorname{SigmoidZNorm}(X) = \gamma \tanh(\alpha X) + \delta
+\operatorname{SigmoidZNorm}(X)
+= \gamma \tanh(\alpha X) + \delta.
 $$
 
-The difference is the interpretation. DyT is motivated as a direct replacement for normalization. SigmoidZNorm is motivated as a centered Bernoulli mean-field update.
+The difference is the interpretation. DyT is motivated as a direct replacement
+for normalization. SigmoidZNorm is motivated as a centered Bernoulli mean-field
+update. The extra $\beta$ term lets each channel learn a prior log-odds shift
+for its binary latent coordinate.
 
-The extra $\beta$ term lets each channel learn a prior log-odds shift for its binary latent coordinate.
+## 7. Stability Notes
 
-## 6. Stability Notes
-
-The squashing function bounds the normalized representation before the affine output:
+The squashing function bounds the normalized representation before the affine
+output:
 
 $$
-2 \operatorname{sigmoid}(x) - 1 \in (-1, 1)
+2\sigma(x) - 1 \in (-1, 1).
 $$
 
 The derivative is also bounded:
 
 $$
-\frac{d}{dx}\bigl[2 \operatorname{sigmoid}(2 \alpha x) - 1\bigr] \le \alpha
+\frac{d}{dx}\left[2\sigma(2\alpha x) - 1\right] \le \alpha.
 $$
 
-This does not replace all optimization benefits of RMSNorm. It only gives a bounded local transform with a controllable slope. The residual path still carries unbounded activations, and optimizer settings remain important.
+This does not replace all optimization benefits of RMSNorm. It only gives a
+bounded local transform with a controllable slope. The residual path still
+carries unbounded activations, and optimizer settings remain important.
 
-For LLMs, DyT reports that smaller initial slopes improve stability at larger scales, and that attention blocks benefit from larger initial slopes than FFN and final layers. SigmoidZ follows that convention with `alpha_attn` and `alpha_other`. These config values are initial values; the corresponding `alpha` tensors are learned during training.
+For LLMs, DyT reports that smaller initial slopes improve stability at larger
+scales, and that attention blocks benefit from larger initial slopes than FFN
+and final layers. SigmoidZ follows that convention with `alpha_attn` and
+`alpha_other`. These config values are initial values; the corresponding
+`alpha` tensors are learned during training.
 
-## 7. What This Proves and Does Not Prove
+## 8. What This Proves and Does Not Prove
 
-This derivation proves that the binary latent-variable modification leads to a sigmoid mean-field update.
+This derivation proves that changing PT from categorical $Z_i$ to
+$Z_i \in \{0,1\}^d$ changes the coordinate update from softmax-normalized label
+probabilities to sigmoid-normalized Bernoulli log-odds.
 
-It also proves that the conservative SigmoidZNorm layer is exactly DyT when the logit bias is zero.
+It also proves that the research attention update is a one-step MFVI analogue,
+and that the conservative SigmoidZNorm layer is exactly DyT when the logit bias
+is zero.
 
-It does not prove that SigmoidZ will outperform RMSNorm or DyT in pretraining. That requires empirical training runs at the target scale.
+It does not prove that SigmoidZ will outperform RMSNorm or DyT in pretraining.
+That requires empirical training runs at the target scale.
